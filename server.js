@@ -7,24 +7,17 @@ const PORT = process.env.PORT || 3000;
 // === BEÁLLÍTÁSOK ===
 const TARGET_URL = 'https://ketokos.hu/phase-two/api/pool';
 const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1538628476574105641/GrKKapRLHkvHE_GvPeZMgptA8LPtLLFqPqjNWYKzf5PAenTcu8l_kScRCMGtmGp-PcGR'; 
-const DISCORD_NOTIFY_INTERVAL = 10 * 60 * 1000; // 10 percenként küld üzenetet
-// Azonnali tesztküldés 15 másodperc múlva (hogy gyűljön össze adat), utána 10 percenként
-setTimeout(() => {
-    console.log('Első Discord üzenet küldése...');
-    const { hourlyRate, count } = getMetrics();
-    sendDiscordNotification(hourlyRate, count);
-}, 15000);
-
-setInterval(() => {
-    const { hourlyRate, count } = getMetrics();
-    sendDiscordNotification(hourlyRate, count);
-}, DISCORD_NOTIFY_INTERVAL);
-
-app.get('/', (req, res) => res.send('Két Okos Bot Működik!'));
-app.listen(PORT, () => console.log(`Szerver fut a ${PORT} porton`));
+const DISCORD_NOTIFY_INTERVAL = 10 * 60 * 1000; // 10 perc
 
 let historyData = [];
 let latestData = { total: null, system_message: null, lastUpdated: null };
+
+console.log(">>> BOT INDÍTÁSA... Webhook URL ellenőrzése... <<<");
+if (!DISCORD_WEBHOOK_URL || DISCORD_WEBHOOK_URL.includes('IDE_MÁSOLD')) {
+    console.error("❌ HIBA: A DISCORD_WEBHOOK_URL nincs megfelelően beállítva!");
+} else {
+    console.log("✅ Webhook URL formátuma megfelelőnek tűnik.");
+}
 
 function findKeyInObject(obj, keyName) {
     if (!obj || typeof obj !== 'object') return null;
@@ -39,8 +32,16 @@ function findKeyInObject(obj, keyName) {
 }
 
 async function sendDiscordNotification(hourlyRate, count) {
-    if (!DISCORD_WEBHOOK_URL || DISCORD_WEBHOOK_URL.includes('IDE_MÁSOLD')) return;
-    if (latestData.total === null) return;
+    console.log(">>> Discord küldési kísérlet... <<<");
+    
+    if (!DISCORD_WEBHOOK_URL || DISCORD_WEBHOOK_URL.includes('IDE_MÁSOLD')) {
+        console.log("❌ Küldés megszakítva: hiányzó Webhook URL.");
+        return;
+    }
+    if (latestData.total === null) {
+        console.log("⚠️ Küldés halasztva: még nem érkezett meg az első adat a ketokos.hu-ról.");
+        return;
+    }
 
     const formattedTotal = new Intl.NumberFormat('hu-HU').format(latestData.total);
     const formattedRate = (hourlyRate >= 0 ? '+' : '') + new Intl.NumberFormat('hu-HU', { maximumFractionDigits: 1 }).format(hourlyRate);
@@ -61,13 +62,19 @@ async function sendDiscordNotification(hourlyRate, count) {
     }
 
     try {
-        await fetch(DISCORD_WEBHOOK_URL, {
+        const res = await fetch(DISCORD_WEBHOOK_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ embeds: [embed] })
         });
+
+        if (res.ok) {
+            console.log("✅ DISCORD ÜZENET SIKERESEN ELKÜLDVE!");
+        } else {
+            console.log(`❌ Discord hiba válasz: HTTP ${res.status} - ${res.statusText}`);
+        }
     } catch (e) {
-        console.error('Hiba:', e.message);
+        console.error('❌ Hálózati hiba a Discord küldésekor:', e.message);
     }
 }
 
@@ -95,7 +102,9 @@ async function fetchData() {
                 historyData = historyData.filter(d => d.timestamp >= now - (24 * 3600 * 1000));
             }
         }
-    } catch (e) {}
+    } catch (e) {
+        console.error("Lekérési hiba a ketokos.hu-ról:", e.message);
+    }
 }
 
 function getMetrics() {
@@ -113,9 +122,17 @@ function getMetrics() {
     return { hourlyRate, count: hourData.length };
 }
 
+// Indításkor azonnal lekéri az adatot
 fetchData();
 setInterval(fetchData, 10000);
 
+// 10 másodperc múlva tesztküldést végez
+setTimeout(() => {
+    const { hourlyRate, count } = getMetrics();
+    sendDiscordNotification(hourlyRate, count);
+}, 10000);
+
+// Utána 10 percenként fut
 setInterval(() => {
     const { hourlyRate, count } = getMetrics();
     sendDiscordNotification(hourlyRate, count);
