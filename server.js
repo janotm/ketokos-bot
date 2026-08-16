@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3000;
 // === BEÁLLÍTÁSOK ===
 const API_URL = 'https://ketokos.hu/phase-two/api/pool';
 const PAGE_URL = 'https://ketokos.hu/phase-two/';
-const DISCORD_WEBHOOK_URL = 'IDE_MÁSOLD_A_DISCORD_WEBHOOK_LINKET'; 
+const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1538628476574105641/GrKKapRLHkvHE_GvPeZMgptA8LPtLLFqPqjNWYKzf5PAenTcu8l_kScRCMGtmGp-PcGR'; 
 
 const STATS_INTERVAL = 1 * 60 * 1000; // Statisztika küldése: 1 PERCENKÉNT
 const CHECK_INTERVAL = 10 * 1000;    // API és Oldal ellenőrzése: 10 másodpercenként
