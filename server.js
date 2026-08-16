@@ -9,13 +9,14 @@ const PORT = process.env.PORT || 3000;
 const API_URL = 'https://ketokos.hu/phase-two/api/pool';
 const PAGE_URL = 'https://ketokos.hu/phase-two/';
 const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1538628476574105641/GrKKapRLHkvHE_GvPeZMgptA8LPtLLFqPqjNWYKzf5PAenTcu8l_kScRCMGtmGp-PcGR'; 
+const TARGET_GOAL = 1000000000; // 1 000 000 000 cél
 
 const STATS_INTERVAL = 1 * 60 * 1000; // Statisztika küldése: 1 PERCENKÉNT
 const CHECK_INTERVAL = 10 * 1000;    // API és Oldal ellenőrzése: 10 másodpercenként
 
 let historyData = [];
 let latestData = { total: null, system_message: null, lastUpdated: null };
-let lastPageHTML = null; // Tárolt HTML kód a változások figyeléséhez
+let lastPageHTML = null;
 
 function findKeyInObject(obj, keyName) {
     if (!obj || typeof obj !== 'object') return null;
@@ -29,22 +30,41 @@ function findKeyInObject(obj, keyName) {
     return null;
 }
 
+// Segédfüggvény a másodpercek formázásához (nap, óra, perc)
+function formatDuration(remainingSec) {
+    const days = Math.floor(remainingSec / 86400);
+    const hours = Math.floor((remainingSec % 86400) / 3600);
+    const minutes = Math.floor((remainingSec % 3600) / 60);
+
+    let durationStr = "";
+    if (days > 0) durationStr += `${days} nap `;
+    if (hours > 0 || days > 0) durationStr += `${hours} óra `;
+    durationStr += `${minutes} perc`;
+    return durationStr;
+}
+
 // 1. Statisztika küldése Discordra (Percenként)
-async function sendDiscordStats(hourlyRate, count) {
+async function sendDiscordStats(metrics) {
     if (!DISCORD_WEBHOOK_URL || DISCORD_WEBHOOK_URL.includes('IDE_MÁSOLD')) return;
     if (latestData.total === null) return;
 
     const formattedTotal = new Intl.NumberFormat('hu-HU').format(latestData.total);
-    const formattedRate = (hourlyRate >= 0 ? '+' : '') + new Intl.NumberFormat('hu-HU', { maximumFractionDigits: 1 }).format(hourlyRate);
+    const formattedDiff = (metrics.diffSinceLast >= 0 ? '+' : '') + new Intl.NumberFormat('hu-HU').format(metrics.diffSinceLast);
+    const formattedRate = (metrics.hourlyRate >= 0 ? '+' : '') + new Intl.NumberFormat('hu-HU', { maximumFractionDigits: 1 }).format(metrics.hourlyRate);
+    const formattedRemaining = new Intl.NumberFormat('hu-HU').format(metrics.remainingValue);
 
     const embed = {
         title: "📊 Két Okos - Élő Statisztika",
         color: 3447003,
         fields: [
             { name: "💰 Jelenlegi érték", value: `**${formattedTotal}**`, inline: false },
-            { name: "📈 1 órás átlag növekedés", value: `${formattedRate} / óra (${count} mérésből)`, inline: true }
+            { name: "➕ Változás az előző mérés óta", value: `**${formattedDiff}**`, inline: true },
+            { name: "📈 1 órás átlag növekedés", value: `${formattedRate} / óra`, inline: true },
+            { name: "🎯 Hátralévő összeg (1 milliárdig)", value: `**${formattedRemaining}**`, inline: false },
+            { name: "⚡ Idő a JELENLEGI sebességgel (utolsó mérés)", value: `**${metrics.currentSpeedEta}**`, inline: false },
+            { name: "⏱️ Idő az 1 ÓNAS ÁTLAG alapján (ETA)", value: `**${metrics.hourlyEtaText}**`, inline: false }
         ],
-        footer: { text: `Utolsó frissítés: ${latestData.lastUpdated}` },
+        footer: { text: `Utolsó frissítés: ${latestData.lastUpdated} (${metrics.count} mérésből)` },
         timestamp: new Date().toISOString()
     };
 
@@ -67,14 +87,13 @@ async function sendDiscordStats(hourlyRate, count) {
 async function sendCodeChangeAlert(changesText) {
     if (!DISCORD_WEBHOOK_URL || DISCORD_WEBHOOK_URL.includes('IDE_MÁSOLD')) return;
 
-    // Ha a különbség túl hosszú, levágjuk a Discord korlátja miatt
     const truncatedDiff = changesText.length > 1800 ? changesText.substring(0, 1800) + '\n... (a többi változás levágva)' : changesText;
 
     const payload = {
         content: "@everyone ⚠️ **VÁLTOZÁS TÖRTÉNT A WEBOLDAL KÓDJÁBAN!**",
         embeds: [{
             title: "🔍 Kódváltozás részletei (ketokos.hu/phase-two/)",
-            color: 15158332, // Piros szín
+            color: 15158332,
             description: "```diff\n" + truncatedDiff + "\n```",
             timestamp: new Date().toISOString()
         }]
@@ -128,18 +147,15 @@ async function checkPageChanges() {
 
         const currentHTML = await response.text();
 
-        // Első futáskor eltároljuk az alapállapotot
         if (lastPageHTML === null) {
             lastPageHTML = currentHTML;
             console.log("Alapértelmezett HTML elmentve a figyeléshez.");
             return;
         }
 
-        // Ha megváltozott a kód
         if (currentHTML !== lastPageHTML) {
             console.log("🚨 Változás észlelve a HTML kódban!");
 
-            // Diff készítése (a hiányzó és hozzáadott sorok kigyűjtése)
             const diff = Diff.diffLines(lastPageHTML, currentHTML);
             let diffSummary = "";
 
@@ -155,7 +171,6 @@ async function checkPageChanges() {
                 await sendCodeChangeAlert(diffSummary);
             }
 
-            // Frissítjük a tárolt HTML-t az új változatra
             lastPageHTML = currentHTML;
         }
     } catch (e) {
@@ -163,10 +178,24 @@ async function checkPageChanges() {
     }
 }
 
+// Metrikák és mindkét ETA kiszámítása
 function getMetrics() {
     const now = Date.now();
     const hourData = historyData.filter(d => d.timestamp >= now - 3600000);
+    
     let hourlyRate = 0;
+    let diffSinceLast = 0;
+    let timeDiffLastSec = 0;
+
+    // Előző méréshez képesti különbség és időtartam
+    if (historyData.length >= 2) {
+        const currentObj = historyData[historyData.length - 1];
+        const previousObj = historyData[historyData.length - 2];
+        diffSinceLast = currentObj.value - previousObj.value;
+        timeDiffLastSec = (currentObj.timestamp - previousObj.timestamp) / 1000;
+    }
+
+    // Órás átlag növekedés
     if (hourData.length >= 2) {
         const oldest = hourData[0];
         const newest = hourData[hourData.length - 1];
@@ -175,10 +204,56 @@ function getMetrics() {
             hourlyRate = ((newest.value - oldest.value) / timeDiffSec) * 3600;
         }
     }
-    return { hourlyRate, count: hourData.length };
+
+    const currentVal = latestData.total || 0;
+    const remainingValue = Math.max(0, TARGET_GOAL - currentVal);
+    
+    let hourlyEtaText = "Számítás folyamatban...";
+    let currentSpeedEta = "Számítás folyamatban...";
+
+    if (currentVal >= TARGET_GOAL) {
+        hourlyEtaText = "🎉 A cél teljesítve!";
+        currentSpeedEta = "🎉 A cél teljesítve!";
+    } else {
+        // 1. ETA a JELENLEGI (utolsó mérés) növekedés alapján
+        if (diffSinceLast <= 0 || timeDiffLastSec <= 0) {
+            currentSpeedEta = "⚠️ Jelenleg nem növekszik (stagnál)";
+        } else {
+            const currentRatePerSec = diffSinceLast / timeDiffLastSec;
+            const remainingSecCurrent = remainingValue / currentRatePerSec;
+            currentSpeedEta = `~${formatDuration(remainingSecCurrent)} múlva`;
+        }
+
+        // 2. ETA az 1 ÓRÁS ÁTLAG alapján
+        if (hourlyRate <= 0) {
+            hourlyEtaText = "⚠️ Stagnál vagy csökken";
+        } else {
+            const hourlyRatePerSec = hourlyRate / 3600;
+            const remainingSecHourly = remainingValue / hourlyRatePerSec;
+            
+            const etaDate = new Date(now + remainingSecHourly * 1000);
+            const etaString = etaDate.toLocaleDateString('hu-HU', { 
+                month: 'short', 
+                day: 'numeric', 
+                hour: '2-digit', 
+                minute: '2-digit' 
+            });
+
+            hourlyEtaText = `${etaString} (~${formatDuration(remainingSecHourly)} múlva)`;
+        }
+    }
+
+    return { 
+        hourlyRate, 
+        count: hourData.length, 
+        diffSinceLast, 
+        remainingValue, 
+        currentSpeedEta,
+        hourlyEtaText 
+    };
 }
 
-// Rendszeres ellenőrzések 10 másodpercenként
+// 10 másodpercenkénti adategyeztetés
 fetchData();
 checkPageChanges();
 setInterval(() => {
@@ -186,16 +261,14 @@ setInterval(() => {
     checkPageChanges();
 }, CHECK_INTERVAL);
 
-// Első statisztika küldése 15 mp múlva
+// Első küldés 15 másodperc múlva
 setTimeout(() => {
-    const { hourlyRate, count } = getMetrics();
-    sendDiscordStats(hourlyRate, count);
+    sendDiscordStats(getMetrics());
 }, 15000);
 
 // Statisztika küldése PERCENKÉNT
 setInterval(() => {
-    const { hourlyRate, count } = getMetrics();
-    sendDiscordStats(hourlyRate, count);
+    sendDiscordStats(getMetrics());
 }, STATS_INTERVAL);
 
 app.get('/', (req, res) => res.send('Két Okos Bot Működik!'));
