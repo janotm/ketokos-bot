@@ -8,6 +8,20 @@ const PORT = process.env.PORT || 3000;
 const TARGET_URL = 'https://ketokos.hu/phase-two/api/pool';
 const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1538628476574105641/GrKKapRLHkvHE_GvPeZMgptA8LPtLLFqPqjNWYKzf5PAenTcu8l_kScRCMGtmGp-PcGR'; 
 const DISCORD_NOTIFY_INTERVAL = 10 * 60 * 1000; // 10 percenként küld üzenetet
+// Azonnali tesztküldés 15 másodperc múlva (hogy gyűljön össze adat), utána 10 percenként
+setTimeout(() => {
+    console.log('Első Discord üzenet küldése...');
+    const { hourlyRate, count } = getMetrics();
+    sendDiscordNotification(hourlyRate, count);
+}, 15000);
+
+setInterval(() => {
+    const { hourlyRate, count } = getMetrics();
+    sendDiscordNotification(hourlyRate, count);
+}, DISCORD_NOTIFY_INTERVAL);
+
+app.get('/', (req, res) => res.send('Két Okos Bot Működik!'));
+app.listen(PORT, () => console.log(`Szerver fut a ${PORT} porton`));
 
 let historyData = [];
 let latestData = { total: null, system_message: null, lastUpdated: null };
